@@ -6,6 +6,7 @@ import ReviewPanel from '~/components/ReviewPanel.vue';
 import DuplicateMergeDialog from '~/components/DuplicateMergeDialog.vue';
 import DeleteImpactDialog from '~/components/DeleteImpactDialog.vue';
 import VersionDrawer from '~/components/VersionDrawer.vue';
+import ReconcileDialog from '~/components/ReconcileDialog.vue';
 import { useDictionaryStore } from '~/store/dictionary';
 import { referencesToEntry } from '~/utils/dictionary';
 import type { DictionaryEntry } from '~/types/dictionary';
@@ -52,6 +53,13 @@ const exportData = () => {
   URL.revokeObjectURL(url);
 };
 
+const onReconcileApplied = () => {
+  const result = store.lastReconcileResult;
+  if (!result) return;
+  statusText.value = `对账完成：新建 ${result.created}、更新 ${result.updated}、重复挂载 ${result.attachedOnly}，共 ${result.batches} 批`;
+  window.setTimeout(() => { statusText.value = '本地数据已同步'; }, 4200);
+};
+
 const moveEntry = (delta: number) => {
   const list = store.filteredEntries;
   const index = list.findIndex((entry) => entry.id === store.selectedId);
@@ -76,6 +84,7 @@ const keyboard = (event: KeyboardEvent) => {
   if (event.key.toLowerCase() === 'k') { event.preventDefault(); moveEntry(-1); }
   if (event.key.toLowerCase() === 'd') { event.preventDefault(); openDuplicates(); }
   if (event.key.toLowerCase() === 'v') { event.preventDefault(); versionsOpen.value = true; }
+  if (event.key.toLowerCase() === 'r') { event.preventDefault(); store.reconcileOpen = true; }
 };
 
 onMounted(() => window.addEventListener('keydown', keyboard));
@@ -91,6 +100,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard));
         <t-button variant="text" theme="default" :disabled="!store.canUndo" @click="store.undo">撤销</t-button>
         <t-button variant="text" theme="default" :disabled="!store.canRedo" @click="store.redo">重做</t-button>
         <t-button variant="outline" theme="default" @click="exportData">导出备份</t-button>
+        <t-button variant="outline" theme="default" @click="store.reconcileOpen = true">⇄ 对账导入</t-button>
         <t-button theme="primary" @click="store.createEntry">＋ 新建词条</t-button>
       </div>
     </header>
@@ -116,7 +126,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard));
       <div class="method-card"><span class="method-index">01</span><div><strong>字段级审校</strong><p>审校意见绑定到词形、发音、释义、例句或来源，编辑可逐条回复并解决。</p></div></div>
       <div class="method-card"><span class="method-index">02</span><div><strong>引用影响检查</strong><p>删除词条前扫描同义词、释义和例句引用，列出可能受影响的全部词条。</p></div></div>
       <div class="method-card"><span class="method-index">03</span><div><strong>离线版本保护</strong><p>所有编辑在浏览器本地保存；撤销重做与版本恢复均保留提交前完整快照。</p></div></div>
-      <div class="keyboard-card"><kbd>J/K</kbd><span>切换词条</span><kbd>/</kbd><span>搜索</span><kbd>D</kbd><span>查重</span><kbd>V</kbd><span>版本</span></div>
+      <div class="keyboard-card"><kbd>J/K</kbd><span>切换词条</span><kbd>/</kbd><span>搜索</span><kbd>D</kbd><span>查重</span><kbd>V</kbd><span>版本</span><kbd>R</kbd><span>对账</span></div>
     </section>
 
     <footer class="footer-bar">
@@ -128,6 +138,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard));
       <DuplicateMergeDialog v-model="duplicateOpen" :pairs="store.duplicates" />
       <DeleteImpactDialog v-model="deleteOpen" :entry="deleteTarget" :impacts="impacts" @confirm="confirmDelete" />
       <VersionDrawer v-model="versionsOpen" />
+      <ReconcileDialog v-model="store.reconcileOpen" @applied="onReconcileApplied" />
     </ClientOnly>
   </div>
 </template>

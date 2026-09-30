@@ -3,7 +3,13 @@ import { defineStore } from 'pinia';
 import type {
   AuditRecord, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus, ReviewComment, VersionRecord
 } from '~/types/dictionary';
-import { findDuplicates } from '~/utils/dictionary';
+import type { DefinitionChoice, ReconcileItem, ReconcilePlan, ReconcileResult } from '~/types/reconcile';
+import { buildReconcilePlan, evaluateAgainstTarget, pendingItems } from '~/utils/reconcile';
+import { findDuplicates, normalizeWord } from '~/utils/dictionary';
+
+const STORAGE_KEY = 'sologsb-1021-dictionary-v1';
+/** 单批写盘的字节预算：备份过大时分批，避免超出浏览器 localStorage 容量 */
+const BATCH_BYTE_BUDGET = 384 * 1024;
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
@@ -66,6 +72,12 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   const statusFilter = ref<EntryStatus | 'all'>('all');
   const dialectFilter = ref('all');
   const fieldReplyDrafts = reactive<Record<string, string>>({});
+  const reconcilePlan = ref<ReconcilePlan | null>(null);
+  const reconcileOpen = ref(false);
+  const reconcileApplying = ref(false);
+  /** 回滚期间禁止持久化 watcher 把失败中的中间态写回本地 */
+  const persistenceLocked = ref(false);
+  const lastReconcileResult = ref<ReconcileResult | null>(null);
 
   const selectedEntry = computed(() => entries.find((entry) => entry.id === selectedId.value) ?? entries[0]);
   const persistableSnapshot = computed<DictionarySnapshot>(() => ({
@@ -116,6 +128,8 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     versions.splice(120);
     audit.unshift({ id: uid('audit'), at: now(), action, detail, entryIds });
     audit.splice(300);
+    // 常规编辑成功后解除失败回滚留下的持久化锁
+    persistenceLocked.value = false;
   }
 
   function createEntry() {
@@ -295,12 +309,325 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     });
   }
 
+  /* ===================== 跨系统对账导入 ===================== */
+
+  const reconcilePending = computed(() => reconcilePlan.value ? pendingItems(reconcilePlan.value) : []);
+
+  function loadReconcilePlan(plan: ReconcilePlan) {
+    reconcilePlan.value = plan;
+    reconcileOpen.value = true;
+    lastReconcileResult.value = null;
+  }
+
+  function closeReconcile() {
+    if (reconcileApplying.value) return;
+    reconcileOpen.value = false;
+  }
+
+  function resolveReconcileCandidate(item: ReconcileItem, targetId: string | '__new__') {
+    if (!reconcilePlan.value) return;
+    const target = targetId === '__new__' ? undefined : entries.find((entry) => entry.id === targetId);
+    evaluateAgainstTarget(item, target);
+  }
+
+  function skipReconcileItem(item: ReconcileItem, skipped: boolean) {
+    item.skipped = skipped;
+    if (skipped) item.definitionChoice = 'skip';
+  }
+
+  function resolveReconcileError(item: ReconcileItem, targetId: string | '__skip__') {
+    if (targetId === '__skip__') {
+      item.skipped = true;
+      return;
+    }
+    const target = entries.find((entry) => entry.id === targetId);
+    if (target) {
+      item.outcome = 'ambiguous';
+      item.candidateIds = [target.id];
+      evaluateAgainstTarget(item, target);
+    }
+  }
+
+  function setDefinitionChoice(item: ReconcileItem, choice: Exclude<DefinitionChoice, 'pending' | 'skip'>, override?: string) {
+    item.definitionChoice = choice;
+    if (override !== undefined) item.definitionOverride = override;
+  }
+
+  const mergeUnique = (target: string[], incoming: string[], same: (a: string, b: string) => boolean = (a, b) => normalizeWord(a) === normalizeWord(b)) => {
+    incoming.forEach((value) => {
+      if (value && !target.some((existing) => same(existing, value))) target.push(value);
+    });
+  };
+
+  /** 把意见挂到对应词条；按 字段+内容 去重，重复档案只挂一次 */
+  function attachComments(target: DictionaryEntry, item: ReconcileItem) {
+    item.incoming.reviewerComments.forEach((incoming) => {
+      const exists = target.reviewerComments.some((comment) => comment.field === incoming.field && normalizeWord(comment.message) === normalizeWord(incoming.message));
+      if (exists) return;
+      const comment: ReviewComment = {
+        ...clone(incoming),
+        id: uid('comment'),
+        replies: incoming.replies.map((reply) => ({ ...clone(reply), id: uid('reply') }))
+      };
+      target.reviewerComments.unshift(comment);
+    });
+  }
+
+  /** 新建条目 */
+  function entryFromIncoming(item: ReconcileItem): DictionaryEntry {
+    const incoming = item.incoming;
+    return {
+      id: uid('entry'),
+      archiveId: incoming.archiveId || undefined,
+      headword: incoming.headword,
+      pronunciation: incoming.pronunciation,
+      partOfSpeech: incoming.partOfSpeech,
+      definition: incoming.definition,
+      dialectVariants: incoming.dialectVariants.map((variant) => ({ ...clone(variant), id: uid('variant') })),
+      examples: incoming.examples.map((example) => ({ ...clone(example), id: uid('example') })),
+      sources: incoming.sources.map((source) => ({ ...clone(source), id: uid('source') })),
+      synonyms: [...incoming.synonyms],
+      status: incoming.status ?? 'draft',
+      notes: incoming.notes,
+      createdAt: now(),
+      updatedAt: now(),
+      reviewerComments: incoming.reviewerComments.map((comment) => ({
+        ...clone(comment),
+        id: uid('comment'),
+        replies: comment.replies.map((reply) => ({ ...clone(reply), id: uid('reply') }))
+      }))
+    };
+  }
+
+  /** 命中条目：按释义决定结果写入；变体/例句/来源合并去重；意见跟到词条 */
+  function updateEntryFromIncoming(target: DictionaryEntry, item: ReconcileItem) {
+    const incoming = item.incoming;
+    target.archiveId = target.archiveId || incoming.archiveId || undefined;
+    if (incoming.pronunciation) target.pronunciation = incoming.pronunciation;
+    if (incoming.partOfSpeech) target.partOfSpeech = incoming.partOfSpeech;
+    if (incoming.notes) target.notes = incoming.notes;
+
+    if (item.definitionChanged) {
+      if (item.definitionChoice === 'update') target.definition = item.definitionOverride || incoming.definition;
+      if (item.definitionChoice === 'combine') target.definition = `${target.definition}；${item.definitionOverride || incoming.definition}`;
+      // 释义一变，原来的“已确认”失效 → 回退到待审
+      if (item.definitionChoice === 'update' || item.definitionChoice === 'combine') target.status = 'review';
+    } else if (incoming.definition && !target.definition) {
+      target.definition = incoming.definition;
+    }
+
+    incoming.dialectVariants.forEach((variant) => {
+      if (!target.dialectVariants.some((existing) => existing.dialect === variant.dialect && normalizeWord(existing.form) === normalizeWord(variant.form))) {
+        target.dialectVariants.push({ ...clone(variant), id: uid('variant') });
+      }
+    });
+    incoming.examples.forEach((example) => {
+      if (!target.examples.some((existing) => normalizeWord(existing.text) === normalizeWord(example.text))) {
+        target.examples.push({ ...clone(example), id: uid('example') });
+      }
+    });
+    incoming.sources.forEach((source) => {
+      if (!target.sources.some((existing) => normalizeWord(existing.title) === normalizeWord(source.title) && normalizeWord(existing.citation) === normalizeWord(source.citation))) {
+        target.sources.push({ ...clone(source), id: uid('source') });
+      }
+    });
+    mergeUnique(target.synonyms, incoming.synonyms);
+    attachComments(target, item);
+  }
+
+  /** 重复档案：意见与同义词引用跟到对应词条，只挂一次；不覆盖任何字段 */
+  function attachDuplicate(item: ReconcileItem, idMap: Map<string, string>) {
+    const targetId = item.targetId ?? (item.groupRef ? idMap.get(item.groupRef) : undefined);
+    const target = targetId ? entries.find((entry) => entry.id === targetId) : undefined;
+    if (!target) return;
+    mergeUnique(target.synonyms, item.incoming.synonyms);
+    attachComments(target, item);
+  }
+
+  /**
+   * 分批应用对账结果。每批独立提交版本快照并尝试写盘；
+   * 一旦备份超过容量或写入失败，立即回滚本批并保留原库，已完成批次也整体撤回。
+   */
+  function applyReconcile(): ReconcileResult {
+    const plan = reconcilePlan.value;
+    if (!plan) return { created: 0, updated: 0, attachedOnly: 0, skipped: 0, batches: 0, details: [] };
+    if (reconcilePending.value.length) {
+      return { created: 0, updated: 0, attachedOnly: 0, skipped: 0, batches: 0, details: ['仍有未处理完的对账项，未入库'] };
+    }
+
+    reconcileApplying.value = true;
+    persistenceLocked.value = false;
+    const originalSnapshot = snapshot();
+    // 以磁盘上已确认的原库为回滚基准：失败后要恢复到导入前的本地状态（含历史版本）
+    let onDiskSnapshot: DictionarySnapshot | null = null;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) onDiskSnapshot = JSON.parse(raw) as DictionarySnapshot;
+    } catch {
+      onDiskSnapshot = null;
+    }
+    const actionable = plan.items.filter((item) => !item.skipped && !item.attachOnly);
+    const duplicates = plan.items.filter((item) => !item.skipped && item.attachOnly);
+    let skippedCount = plan.items.filter((item) => item.skipped).length;
+
+    let created = 0;
+    let updated = 0;
+    let attachedOnly = 0;
+    let batches = 0;
+    const details: string[] = [];
+    const idMap = new Map<string, string>();
+
+    const rollbackAll = (message: string): ReconcileResult => {
+      persistenceLocked.value = true;
+      restore(onDiskSnapshot ?? originalSnapshot);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistableSnapshot.value));
+      } catch {
+        // 原库体积更小，仍写不下时保留内存中的原库，刷新前请先导出
+      }
+      // 保持锁定：watcher 不得在失败后把中间态写回；下次成功 commit / 重试导入时解锁
+      reconcileApplying.value = false;
+      details.push(message);
+      return { created: 0, updated: 0, attachedOnly: 0, skipped: skippedCount, batches: 0, storageError: message, details };
+    };
+
+    let failure = '';
+    const failAll = (message: string): ReconcileResult => {
+      failure = message;
+      return rollbackAll(message);
+    };
+    const flushBatch = (batch: ReconcileItem[], touchedIds: string[]): boolean => {
+      const before = snapshot();
+      const stamp = now();
+      const detailParts: string[] = [];
+      batch.forEach((item) => {
+        const incoming = item.incoming;
+        if (item.outcome === 'new') {
+          const entry = entryFromIncoming(item);
+          entries.unshift(entry);
+          idMap.set(item.ref, entry.id);
+          created += 1;
+          detailParts.push(`新建“${incoming.headword}”（${item.ref}）`);
+        } else {
+          const targetId = item.targetId ?? idMap.get(item.ref);
+          const target = targetId ? entries.find((entry) => entry.id === targetId) : undefined;
+          if (!target) return;
+          idMap.set(item.ref, target.id);
+          updateEntryFromIncoming(target, item);
+          updated += 1;
+          const definitionNote = item.definitionChanged
+            ? item.definitionChoice === 'update' ? '，释义已更新（确认失效转待审）'
+              : item.definitionChoice === 'combine' ? '，释义已拼接（确认失效转待审）'
+                : '，释义保留原值'
+            : '';
+          detailParts.push(`更新“${target.headword}”（${item.ref}${definitionNote}）`);
+        }
+      });
+      touchedIds.forEach((id) => {
+        const entry = entries.find((item) => item.id === id);
+        if (entry) entry.updatedAt = stamp;
+      });
+      revision.value += 1;
+      versions.unshift({ id: uid('version'), at: stamp, action: '对账导入', detail: detailParts.join('；'), before, entryId: touchedIds[0] });
+      versions.splice(120);
+
+      // 写盘容量检查：失败则整批回滚
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistableSnapshot.value));
+        batches += 1;
+        details.push(...detailParts);
+        return true;
+      } catch (error) {
+        restore(before);
+        failure = `备份超过本地容量或写入失败（${(error as Error).message}），已回滚本批并保留原库，未继续入库`;
+        return false;
+      }
+    };
+
+    // 按字节预算分批处理主条目
+    let currentBatch: ReconcileItem[] = [];
+    let currentBytes = 0;
+    let currentTouched: string[] = [];
+    for (const item of actionable) {
+      const size = JSON.stringify(item.incoming).length * 2 + 2048;
+      if (currentBatch.length && currentBytes + size > BATCH_BYTE_BUDGET) {
+        if (!flushBatch(currentBatch, currentTouched)) {
+          const result = failAll(failure);
+          lastReconcileResult.value = result;
+          return result;
+        }
+        currentBatch = [];
+        currentBytes = 0;
+        currentTouched = [];
+      }
+      currentBatch.push(item);
+      currentBytes += size;
+      if (item.targetId) currentTouched.push(item.targetId);
+    }
+    if (currentBatch.length && !flushBatch(currentBatch, currentTouched)) {
+      const result = failAll(failure);
+      lastReconcileResult.value = result;
+      return result;
+    }
+
+    // 重复档案统一挂载（同样只挂一次），作为最后一批
+    const attachTargets = new Set<string>();
+    if (duplicates.length) {
+      const beforeAttach = snapshot();
+      try {
+        duplicates.forEach((item) => {
+          attachDuplicate(item, idMap);
+          const targetId = item.targetId ?? (item.groupRef ? idMap.get(item.groupRef) : undefined);
+          if (targetId) {
+            attachTargets.add(targetId);
+            attachedOnly += 1;
+            details.push(`重复档案 ${item.ref} 仅挂载意见与同义词到“${entries.find((e) => e.id === targetId)?.headword}”`);
+          } else {
+            // 主档案被跳过 / 新建未生效时，重复档案无目标可挂，一并跳过
+            skippedCount += 1;
+            details.push(`重复档案 ${item.ref} 的主档案未入库，随之一并跳过`);
+          }
+        });
+        attachTargets.forEach((id) => {
+          const found = entries.find((item) => item.id === id);
+          if (found) found.updatedAt = now();
+        });
+        revision.value += 1;
+        versions.unshift({
+          id: uid('version'), at: now(), action: '对账导入·重复挂载',
+          detail: `${duplicates.length} 份重复档案仅挂载审校意见与同义词，各只挂一次`, before: beforeAttach
+        });
+        versions.splice(120);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistableSnapshot.value));
+        batches += 1;
+      } catch (error) {
+        const result = rollbackAll(`重复档案写入失败（${(error as Error).message}），已回滚全部导入并保留原库`);
+        lastReconcileResult.value = result;
+        return result;
+      }
+    }
+
+    audit.unshift({
+      id: uid('audit'), at: now(), action: '跨系统对账导入',
+      detail: `导入 ${plan.sourceNames.join('、')}：新建 ${created}，更新 ${updated}，重复挂载 ${attachedOnly}，跳过 ${skippedCount}，共 ${batches} 批`,
+      entryIds: [...attachTargets, ...idMap.values()]
+    });
+    audit.splice(300);
+
+    const result: ReconcileResult = { created, updated, attachedOnly, skipped: skippedCount, batches, details };
+    lastReconcileResult.value = result;
+    reconcileApplying.value = false;
+    reconcileOpen.value = false;
+    reconcilePlan.value = null;
+    return result;
+  }
+
   function hydrateFromBrowser() {
     try {
-      const raw = localStorage.getItem('sologsb-1021-dictionary-v1');
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) restore(JSON.parse(raw) as DictionarySnapshot);
     } catch {
-      localStorage.removeItem('sologsb-1021-dictionary-v1');
+      localStorage.removeItem(STORAGE_KEY);
     } finally {
       hydrated.value = true;
     }
@@ -316,6 +643,9 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     canUndo: computed(() => undoStack.value.length > 0), canRedo: computed(() => redoStack.value.length > 0),
     createEntry, updateField, setStatus, addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
     addSource, updateSource, removeSource, setSynonyms, addComment, replyComment, toggleComment, deleteEntry, mergeEntries,
-    undo, redo, restoreVersion, hydrateFromBrowser, exportPackage
+    undo, redo, restoreVersion, hydrateFromBrowser, exportPackage,
+    reconcilePlan, reconcileOpen, reconcileApplying, reconcilePending, lastReconcileResult, persistenceLocked,
+    loadReconcilePlan, closeReconcile, resolveReconcileCandidate, resolveReconcileError, skipReconcileItem,
+    setDefinitionChoice, applyReconcile
   };
 });

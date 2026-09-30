@@ -7,7 +7,8 @@
     "dev": "nuxt dev",
     "build": "nuxt generate",
     "generate": "nuxt generate",
-    "preview": "npx serve .output/public"
+    "preview": "npx serve .output/public",
+    "test:reconcile": "esbuild scripts/test-reconcile.ts --bundle --platform=node --format=esm --outfile=/tmp/test-reconcile.mjs --log-level=warning && node /tmp/test-reconcile.mjs && esbuild scripts/test-reconcile-store.ts --bundle --platform=node --format=esm --outfile=/tmp/test-reconcile-store.mjs --log-level=warning --alias:~=. && node /tmp/test-reconcile-store.mjs"
   },
   "dependencies": {
     "@pinia/nuxt": "^1.0.2",

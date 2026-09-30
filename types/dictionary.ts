@@ -34,6 +34,8 @@ export interface ReviewComment {
 
 export interface DictionaryEntry {
   id: string;
+  /** 语言档案室的统一档案编号，跨系统对账时优先据此认条 */
+  archiveId?: string;
   headword: string;
   pronunciation: string;
   partOfSpeech: string;
