@@ -6,6 +6,7 @@ import ReviewPanel from '~/components/ReviewPanel.vue';
 import DuplicateMergeDialog from '~/components/DuplicateMergeDialog.vue';
 import DeleteImpactDialog from '~/components/DeleteImpactDialog.vue';
 import VersionDrawer from '~/components/VersionDrawer.vue';
+import ReconcileImportDialog from '~/components/ReconcileImportDialog.vue';
 import { useDictionaryStore } from '~/store/dictionary';
 import { referencesToEntry } from '~/utils/dictionary';
 import type { DictionaryEntry } from '~/types/dictionary';
@@ -14,6 +15,7 @@ const store = useDictionaryStore();
 const duplicateOpen = ref(false);
 const versionsOpen = ref(false);
 const deleteOpen = ref(false);
+const reconcileOpen = ref(false);
 const deleteTarget = ref<DictionaryEntry | null>(null);
 const statusText = ref('本地数据已同步');
 
@@ -91,6 +93,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard));
         <t-button variant="text" theme="default" :disabled="!store.canUndo" @click="store.undo">撤销</t-button>
         <t-button variant="text" theme="default" :disabled="!store.canRedo" @click="store.redo">重做</t-button>
         <t-button variant="outline" theme="default" @click="exportData">导出备份</t-button>
+        <t-button variant="outline" theme="default" @click="reconcileOpen = true">对账导入</t-button>
         <t-button theme="primary" @click="store.createEntry">＋ 新建词条</t-button>
       </div>
     </header>
@@ -128,6 +131,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard));
       <DuplicateMergeDialog v-model="duplicateOpen" :pairs="store.duplicates" />
       <DeleteImpactDialog v-model="deleteOpen" :entry="deleteTarget" :impacts="impacts" @confirm="confirmDelete" />
       <VersionDrawer v-model="versionsOpen" />
+      <ReconcileImportDialog v-model="reconcileOpen" />
     </ClientOnly>
   </div>
 </template>

@@ -2,6 +2,7 @@ export type EntryStatus = 'draft' | 'review' | 'disputed' | 'confirmed';
 
 export interface DialectVariant {
   id: string;
+  archiveNo?: string;
   dialect: string;
   form: string;
   pronunciation: string;
@@ -34,6 +35,7 @@ export interface ReviewComment {
 
 export interface DictionaryEntry {
   id: string;
+  archiveNo?: string;
   headword: string;
   pronunciation: string;
   partOfSpeech: string;

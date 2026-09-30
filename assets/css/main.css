@@ -179,3 +179,56 @@ kbd { padding: 3px 6px; border: 1px solid #cbd6d1; border-bottom-width: 2px; bor
   .bottom-bar { grid-template-columns: repeat(3, 1fr); }
   .keyboard-card { display: none; }
 }
+
+/* 对账导入 */
+.reconcile-dialog .t-dialog__body { max-height: 78vh; overflow-y: auto; }
+.reconcile-select { display: flex; flex-direction: column; gap: 14px; }
+.select-drop { position: relative; padding: 26px; border: 1.5px dashed #9db8af; border-radius: 12px; background: #f4f8f6; text-align: center; }
+.select-drop input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.select-hint { display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.select-hint strong { font-family: "Songti SC", serif; font-size: 16px; color: var(--forest); }
+.select-hint span { color: var(--muted); font-size: 10px; line-height: 1.6; }
+.select-note { padding: 12px 14px; border-radius: 9px; background: #fbf6ec; }
+.select-note p { margin: 4px 0; color: #7a5a2e; font-size: 10px; line-height: 1.6; }
+.reconcile-review { display: flex; flex-direction: column; gap: 12px; }
+.reconcile-summary { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+.reconcile-summary > div { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; border-radius: 9px; background: #f0f4f1; }
+.reconcile-summary strong { font-family: "Songti SC", serif; font-size: 20px; color: var(--forest); }
+.reconcile-summary span { color: var(--muted); font-size: 8px; }
+.reconcile-summary .pending-on { background: #fbf0de; }
+.reconcile-summary .pending-on strong { color: #a26931; }
+.pending-list { display: flex; flex-direction: column; gap: 12px; }
+.pending-card { padding: 12px; border: 1px solid #e0e7e3; border-radius: 10px; background: #fafbf9; }
+.pending-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.pending-head strong { font-size: 14px; }
+.pending-pos { color: var(--muted); font-size: 10px; }
+.candidate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.candidate-card { display: flex; gap: 8px; align-items: flex-start; padding: 10px; border: 1px solid #d6e0dc; border-radius: 8px; background: white; cursor: pointer; }
+.candidate-card.selected { border-color: var(--forest); background: #eaf3ef; box-shadow: inset 2px 0 0 var(--forest); }
+.candidate-card input { margin-top: 3px; }
+.candidate-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.candidate-title { display: flex; align-items: center; gap: 6px; }
+.candidate-body p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #435852; font-size: 10px; }
+.candidate-body small { color: var(--muted); font-size: 8px; }
+.create-card { border-style: dashed; }
+.skip-card { border-style: dashed; opacity: .85; }
+.definition-choice { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 10px; padding: 8px 10px; border-radius: 7px; background: #fbf0de; font-size: 10px; color: #7a5a2e; }
+.definition-choice label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.definition-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.definition-box { padding: 10px; border-radius: 8px; background: #f5f7f5; }
+.definition-box span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 8px; }
+.definition-box p { margin: 0; font-size: 10px; line-height: 1.6; }
+.auto-details { border: 1px solid #e0e7e3; border-radius: 8px; padding: 8px 12px; background: #f5f8f5; }
+.auto-details summary { color: var(--forest); font-size: 10px; cursor: pointer; }
+.auto-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.auto-list span { padding: 3px 8px; border-radius: 6px; background: white; font-size: 9px; color: #5b716a; }
+.reconcile-importing { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 30px 0; }
+.reconcile-importing p { margin: 0; font-family: "Songti SC", serif; font-size: 15px; color: var(--forest); }
+.reconcile-importing span { color: var(--muted); font-size: 10px; }
+.reconcile-done { display: flex; flex-direction: column; gap: 12px; }
+.failed-list { padding: 10px 12px; border-radius: 9px; background: #fbf0de; }
+.failed-list h4 { margin: 0 0 8px; color: #a26931; font-size: 11px; }
+.failed-list article { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid #f0e2c4; font-size: 10px; }
+.failed-list article:last-child { border-bottom: 0; }
+.failed-list span { color: #8a6a3a; font-size: 9px; }
+.all-done { margin: 0; }

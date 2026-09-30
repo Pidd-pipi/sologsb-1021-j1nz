@@ -18,6 +18,8 @@
   },
   "devDependencies": {
     "@tdesign-vue-next/nuxt": "^0.2.2",
-    "typescript": "^5.9.2"
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.2",
+    "vue-tsc": "^3.3.11"
   }
 }
